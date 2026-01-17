@@ -2,7 +2,7 @@
 set -e
 
 # =============================================
-# RPM to Flatpak - 智能探测器 (增强交互版)
+# RPM to Flatpak - 智能探测器 (V2.2: 修复信号捕捉)
 # =============================================
 
 FEDORA_VER="43"
@@ -14,7 +14,7 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
 if [ -z "$1" ]; then
     echo "用法: $0 <rpm文件路径>"
@@ -22,6 +22,7 @@ if [ -z "$1" ]; then
 fi
 
 RPM_FILE=$(realpath "$1")
+RPM_FILENAME=$(basename "$RPM_FILE")
 if [ ! -f "$RPM_FILE" ]; then
     echo "错误：文件不存在: $RPM_FILE"
     exit 1
@@ -41,65 +42,86 @@ EXTRA_PATH=""
 EXTRA_LD=""
 
 cleanup() {
+    # 防止重复执行
+    trap - EXIT
+    
+    # 删除临时文件
+    if [ -f "/tmp/rpm_probe_files_$$.txt" ]; then
+        rm -f "/tmp/rpm_probe_files_$$.txt"
+    fi
+
+    # 自动删除容器
     echo ""
-    echo -e "${BLUE}[*] 清理探测容器...${NC}"
+    echo -e "${BLUE}[*] 正在清理探测容器...${NC}"
     podman rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
-    rm -f /tmp/rpm_probe_files_$$.txt
 }
-trap cleanup EXIT INT TERM
+# 只捕捉 EXIT
+trap cleanup EXIT
 
-# =============================================
-# 核心功能函数
-# =============================================
+# ... (中间的辅助函数 scan_files, enter_explorer, init_container 逻辑保持不变，为了篇幅省略，请保留 V2.1 的内容) ...
+# 为了方便你复制，这里把 enter_explorer 和 init_container 完整放出来：
 
-# 启动容器
+scan_files() {
+    echo -e "${BLUE}  ↻ 正在扫描容器文件系统...${NC}"
+    podman diff "$CONTAINER_NAME" | awk '$1=="A" {print $2}' > /tmp/rpm_probe_files_$$.txt
+    
+    DESKTOP_LIST=$(grep '\.desktop$' /tmp/rpm_probe_files_$$.txt | grep '/applications/' | grep -v '/opt/' || echo "")
+    DESKTOP_COUNT=$(echo "$DESKTOP_LIST" | grep -v '^$' | wc -l)
+    
+    EXEC_LIST=$(podman exec "$CONTAINER_NAME" bash -c "find /usr/bin /usr/sbin /opt -type f 2>/dev/null | head -n 100 | while read f; do if file \"\$f\" 2>/dev/null | grep -q ELF; then echo \"\$f\"; fi; done" | head -30)
+    EXEC_COUNT=$(echo "$EXEC_LIST" | grep -v '^$' | wc -l)
+    
+    ICON_LIST=$(podman exec "$CONTAINER_NAME" bash -c "find /usr/share/icons /usr/share/pixmaps /opt -name '*.png' -o -name '*.svg' 2>/dev/null | head -n 50 | while read f; do size=\$(stat -c%s \"\$f\" 2>/dev/null || echo 0); echo \"\$size \$f\"; done | sort -rn | head -20 | awk '{print \$2}'")
+    ICON_COUNT=$(echo "$ICON_LIST" | grep -v '^$' | wc -l)
+}
+
+enter_explorer() {
+    echo ""
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo -e "${YELLOW}🔧 进入容器 Shell${NC}"
+    echo "提示: "
+    echo "  1. RPM 文件位于: ${GREEN}/root/$RPM_FILENAME${NC}"
+    echo "  2. 强行安装命令: ${CYAN}rpm -ivh --nodeps --nosignature /root/$RPM_FILENAME${NC}"
+    echo "  3. 完成后输入 'exit' 返回向导。"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    
+    podman exec -it "$CONTAINER_NAME" bash || true
+    
+    echo ""
+    echo -e "${GREEN}交互模式结束，继续执行...${NC}"
+    scan_files
+}
+
 init_container() {
     echo -e "${BLUE}[1/2] 启动环境并安装 RPM...${NC}"
+    podman rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
+
     podman run -d --name "$CONTAINER_NAME" \
         --tmpfs /tmp \
         --tmpfs /var/cache/dnf \
         "$BASE_IMAGE" sleep infinity >/dev/null
 
-    podman cp "$RPM_FILE" "$CONTAINER_NAME":/tmp/target.rpm
-    echo "  → 正在安装 RPM (可能需要几秒钟)..."
-    if ! podman exec "$CONTAINER_NAME" dnf install -y /tmp/target.rpm >/dev/null 2>&1; then
-        echo -e "${RED}安装失败！${NC} 请进入交互模式检查。"
+    echo "  → 上传 RPM 到 /root/$RPM_FILENAME"
+    podman cp "$RPM_FILE" "$CONTAINER_NAME":/root/"$RPM_FILENAME"
+    
+    echo "  → 尝试自动安装..."
+    if ! podman exec "$CONTAINER_NAME" dnf install -y "/root/$RPM_FILENAME" >/dev/null 2>&1; then
+        echo ""
+        echo -e "${RED}❌ 自动安装失败！${NC} (RPM 签名问题或依赖缺失)"
+        echo -e "别担心，请按以下步骤手动处理："
+        echo -e "1. 输入 ${CYAN}y${NC} 进入容器"
+        echo -e "2. 运行: ${CYAN}rpm -ivh --nodeps --nosignature --nodigest /root/$RPM_FILENAME${NC}"
+        echo -e "3. 运行: ${CYAN}exit${NC}"
+        echo ""
+        read -p "是否进入容器手动处理? [Y/n] " fix_choice
+        if [[ "$fix_choice" =~ ^[Nn]$ ]]; then
+             exit 1
+        else
+             enter_explorer
+        fi
     else
         echo -e "  ${GREEN}✓${NC} 安装完成"
     fi
-}
-
-# 扫描文件系统 (每次探索回来后都会运行)
-scan_files() {
-    echo -e "${BLUE}  ↻ 正在扫描容器文件系统...${NC}"
-    # 提取所有新增文件
-    podman diff "$CONTAINER_NAME" | awk '$1=="A" {print $2}' > /tmp/rpm_probe_files_$$.txt
-    
-    # 扫描 Desktop
-    DESKTOP_LIST=$(grep '\.desktop$' /tmp/rpm_probe_files_$$.txt | grep '/applications/' | grep -v '/opt/' || echo "")
-    DESKTOP_COUNT=$(echo "$DESKTOP_LIST" | grep -v '^$' | wc -l)
-    
-    # 扫描 ELF 可执行文件
-    EXEC_LIST=$(podman exec "$CONTAINER_NAME" bash -c "find /usr/bin /usr/sbin /opt -type f 2>/dev/null | head -n 100 | while read f; do if file \"\$f\" 2>/dev/null | grep -q ELF; then echo \"\$f\"; fi; done" | head -30)
-    EXEC_COUNT=$(echo "$EXEC_LIST" | grep -v '^$' | wc -l)
-    
-    # 扫描图标
-    ICON_LIST=$(podman exec "$CONTAINER_NAME" bash -c "find /usr/share/icons /usr/share/pixmaps /opt -name '*.png' -o -name '*.svg' 2>/dev/null | head -n 50 | while read f; do size=\$(stat -c%s \"\$f\" 2>/dev/null || echo 0); echo \"\$size \$f\"; done | sort -rn | head -20 | awk '{print \$2}'")
-    ICON_COUNT=$(echo "$ICON_LIST" | grep -v '^$' | wc -l)
-}
-
-# 进入手动探索模式
-enter_explorer() {
-    echo ""
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo -e "${YELLOW}🔧 进入容器 Shell${NC}"
-    echo "提示: 你可以使用 'ls', 'find', 'file' 等命令查看文件。"
-    echo "      如果你修改了文件结构，退出后脚本会重新扫描。"
-    echo -e "      输入 ${RED}exit${NC} 返回向导。"
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    podman exec -it "$CONTAINER_NAME" bash
-    echo ""
-    scan_files # 退出后重新扫描
 }
 
 # =============================================
@@ -112,6 +134,8 @@ step_desktop() {
         echo "┌─────────────────────────────────────────────────────────┐"
         echo "│ [1/4] 选择 Desktop 文件                                  │"
         echo "└─────────────────────────────────────────────────────────┘"
+        echo "提示：如果有多个组件 (如 WPS)，请选择主程序的入口。"
+        echo ""
         
         if [ "$DESKTOP_COUNT" -eq 0 ]; then
             echo -e "  ${YELLOW}⚠ 未找到标准的 .desktop 文件${NC}"
@@ -122,6 +146,9 @@ step_desktop() {
         echo ""
         echo -e "  操作: [编号] 选择, [s] 跳过/无, ${CYAN}[e] 手动探索${NC}, [m] 手动输入路径"
         read -p "  请选择 > " choice
+
+        # 处理 Ctrl+D 或空输入导致的异常
+        if [ $? -ne 0 ]; then exit 1; fi
 
         case "$choice" in
             e|E) enter_explorer ;;
@@ -156,11 +183,12 @@ step_exec() {
         echo "│ [2/4] 选择主程序 (Executable)                            │"
         echo "└─────────────────────────────────────────────────────────┘"
         
-        # 尝试从 Desktop 文件智能解析
         SUGGESTED=""
         if [ -n "$SELECTED_DESKTOP" ]; then
             CMD_IN_DESKTOP=$(podman exec "$CONTAINER_NAME" grep '^Exec=' "$SELECTED_DESKTOP" | head -n1 | sed 's/^Exec=//' | awk '{print $1}' | tr -d '"' | tr -d "'")
-            # 检查是否是绝对路径，如果不是则 which 查找
+            # WPS 特殊处理：它的 Exec 往往是 /usr/bin/wps %f，我们只要路径部分
+            CMD_IN_DESKTOP=$(echo "$CMD_IN_DESKTOP" | awk '{print $1}')
+            
             if [[ "$CMD_IN_DESKTOP" == /* ]]; then
                 SUGGESTED="$CMD_IN_DESKTOP"
             else
@@ -210,7 +238,6 @@ step_exec() {
         esac
     done
     
-    # 后处理：确定名称
     EXEC_NAME=$(basename "$SELECTED_EXEC")
     echo -e "  ${GREEN}✓ 已选择: $SELECTED_EXEC (名称: $EXEC_NAME)${NC}"
 }
@@ -222,14 +249,11 @@ step_icon() {
         echo "│ [3/4] 选择图标                                           │"
         echo "└─────────────────────────────────────────────────────────┘"
         
-        # 尝试从 Desktop 解析
         SUGGESTED_ICON=""
         if [ -n "$SELECTED_DESKTOP" ]; then
              ICON_NAME=$(podman exec "$CONTAINER_NAME" grep '^Icon=' "$SELECTED_DESKTOP" | head -n1 | cut -d= -f2)
-             # 如果 Icon= 已经是绝对路径
              if [[ "$ICON_NAME" == /* ]]; then
                  SUGGESTED_ICON="$ICON_NAME"
-             # 否则在 scan 列表中找名字匹配的
              elif [ -n "$ICON_NAME" ]; then
                  SUGGESTED_ICON=$(echo "$ICON_LIST" | grep "$ICON_NAME" | head -n1)
              fi
@@ -281,9 +305,6 @@ step_flags() {
         echo "│ [4/4] 运行参数                                           │"
         echo "└─────────────────────────────────────────────────────────┘"
         
-        echo -e "  操作: [Enter] 确认, ${CYAN}[e] 手动探索 (检查沙箱文件)${NC}"
-        
-        # 检测 Electron
         IS_ELECTRON=0
         if echo "$SELECTED_EXEC" | grep -qE 'electron|code|atom|vscode'; then IS_ELECTRON=1; fi
         if podman exec "$CONTAINER_NAME" find /opt -name "chrome-sandbox" 2>/dev/null | grep -q .; then IS_ELECTRON=1; fi
@@ -321,7 +342,7 @@ step_flags() {
 # =============================================
 
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "  RPM 探测器 - 交互模式"
+echo "  RPM 探测器 - 交互模式 (V2.2)"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "目标 RPM: $APP_NAME"
 echo ""
@@ -373,4 +394,6 @@ echo "内容如下:"
 echo "----------------------------------------"
 cat "$CONF_FILE"
 echo "----------------------------------------"
-echo "你可以直接运行构建脚本了。"
+echo ""
+echo -e "${YELLOW}下一步:${NC}"
+echo "运行构建脚本: ./rpm2flatpak-build.sh $CONF_FILE"

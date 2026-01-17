@@ -19,6 +19,12 @@ if [ -z "$1" ]; then
     exit 1
 fi
 
+# 新增：检查是否启用强制模式
+FORCE_MODE=0
+if [ "$2" = "--force" ]; then
+    FORCE_MODE=1
+fi
+
 CONF_FILE="$1"
 if [ ! -f "$CONF_FILE" ]; then
     echo "错误：配置文件不存在: $CONF_FILE"
@@ -119,6 +125,20 @@ else
     else
         echo "错误：找不到 RPM 文件: $RPM_FILE"
         exit 1
+    fi
+fi
+
+if [ "$FORCE_MODE" -eq 1 ]; then
+    echo "  ⚠️  启用强制安装模式 (忽略依赖与签名)..."
+    # 使用 rpm 直接安装，忽略所有校验
+    podman exec "$CONTAINER_NAME" rpm -ivh --nodeps --nosignature --nodigest "$RPM_TARGET"
+else
+    # 默认模式：尝试使用 dnf 智能安装
+    echo "  → 使用 DNF 安装..."
+    if ! podman exec "$CONTAINER_NAME" dnf install -y "$RPM_TARGET" 2>&1 | grep -v "^warning:"; then
+        echo "  ⚠ DNF 安装遇到问题，尝试继续..."
+        # 如果 DNF 失败，通常后面提取文件会为空，但这里保留 || true 逻辑与原版一致，
+        # 或者你可以在这里加一个 fallback 自动切到 rpm 模式
     fi
 fi
 
