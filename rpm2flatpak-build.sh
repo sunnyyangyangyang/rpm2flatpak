@@ -326,16 +326,16 @@ flatpak build-finish "$WORK_DIR/build" \
     --socket=wayland \
     --socket=pulseaudio \
     --device=dri \
-    --filesystem=xdg-documents \
-    --filesystem=xdg-download \
-    --filesystem=xdg-desktop \
-    --filesystem=xdg-music \
-    --filesystem=xdg-pictures \
-    --filesystem=xdg-videos \
+    --filesystem=xdg-run/dconf \
+    --filesystem=~/.config/dconf:ro \
     --talk-name=org.freedesktop.FileManager1 \
+    --talk-name=org.freedesktop.portal.Desktop \
+    --talk-name=org.freedesktop.portal.FileChooser \
+    --talk-name=org.freedesktop.portal.Documents \
     --env=PATH="$FLATPAK_PATH" \
     --env=LD_LIBRARY_PATH="$FLATPAK_LD" \
-    --env=ELECTRON_TRASH=gio
+    --env=ELECTRON_TRASH=gio \
+    --env=GTK_USE_PORTAL=1
 
 mkdir -p "$WORK_DIR/repo"
 flatpak build-export "$WORK_DIR/repo" "$WORK_DIR/build" >/dev/null
