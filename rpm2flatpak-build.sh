@@ -2,8 +2,8 @@
 set -e
 
 # =============================================
-# RPM to Flatpak - 构建器 (修复版)
-# 用途: 根据配置文件构建 Flatpak 包
+# RPM to Flatpak - Builder (Fixed Version)
+# Purpose: Build Flatpak package from config file
 # =============================================
 
 FEDORA_VER="43"
@@ -12,42 +12,36 @@ BASE_IMAGE="registry.fedoraproject.org/fedora:${FEDORA_VER}"
 ARCH=$(uname -m)
 
 if [ -z "$1" ]; then
-    echo "用法: $0 <配置文件>"
-    echo "示例: $0 wechat.conf"
+    echo "Usage: $0 <config_file>"
+    echo "Example: $0 wechat.conf"
     echo ""
-    echo "提示: 先运行 ./rpm2flatpak-probe.sh 生成配置文件"
+    echo "Tip: Run ./rpm2flatpak-probe.sh first to generate config file"
     exit 1
-fi
-
-# 新增：检查是否启用强制模式
-FORCE_MODE=0
-if [ "$2" = "--force" ]; then
-    FORCE_MODE=1
 fi
 
 CONF_FILE="$1"
 if [ ! -f "$CONF_FILE" ]; then
-    echo "错误：配置文件不存在: $CONF_FILE"
+    echo "Error: Config file does not exist: $CONF_FILE"
     exit 1
 fi
 
 # =============================================
-# 读取配置文件
+# Parse Configuration File
 # =============================================
 parse_conf() {
     local section=""
     while IFS= read -r line; do
-        # 跳过注释和空行
+        # Skip comments and empty lines
         [[ "$line" =~ ^#.*$ ]] && continue
         [[ -z "$line" ]] && continue
         
-        # 解析 section
+        # Parse section
         if [[ "$line" =~ ^\[(.+)\]$ ]]; then
             section="${BASH_REMATCH[1]}"
             continue
         fi
         
-        # 解析 key=value
+        # Parse key=value
         if [[ "$line" =~ ^([^=]+)=(.*)$ ]]; then
             key="${BASH_REMATCH[1]}"
             value="${BASH_REMATCH[2]}"
@@ -57,16 +51,22 @@ parse_conf() {
 }
 
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "RPM to Flatpak 构建器"
+echo "RPM to Flatpak Builder"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
 
 parse_conf
 
-# 验证必需参数
+# Validate required parameters
 if [ -z "$CFG_meta_app_name" ] || [ -z "$CFG_exec_exec_path" ]; then
-    echo "错误：配置文件缺少必需字段 (app_name 或 exec_path)"
+    echo "Error: Config file missing required fields (app_name or exec_path)"
     exit 1
+fi
+
+# Read force_install flag from config
+FORCE_MODE=0
+if [ "$CFG_meta_force_install" = "yes" ]; then
+    FORCE_MODE=1
 fi
 
 APP_NAME="$CFG_meta_app_name"
@@ -80,97 +80,94 @@ SAFE_NAME=$(echo "$APP_NAME" | tr '_' '-' | tr '[:upper:]' '[:lower:]')
 FLATPAK_ID="org.rpm.${SAFE_NAME}"
 OUTPUT_BUNDLE="${APP_NAME}.flatpak"
 
-echo "应用名称: $APP_NAME"
+echo "Application name: $APP_NAME"
 echo "Flatpak ID: $FLATPAK_ID"
-echo "可执行文件: $EXEC_PATH"
-echo "启动命令: $EXEC_NAME"
+echo "Executable: $EXEC_PATH"
+echo "Launch command: $EXEC_NAME"
 echo ""
 
 # =============================================
-# 工作环境
+# Working Environment
 # =============================================
 WORK_DIR=$(mktemp -d -t rpm2flatpak.XXXXXX)
 CONTAINER_NAME="builder_$(basename $WORK_DIR)"
 
-echo "[*] 工作目录: $WORK_DIR"
+echo "[*] Working directory: $WORK_DIR"
 
 cleanup() {
     echo ""
-    echo "[*] 正在清理环境..."
+    echo "[*] Cleaning up environment..."
     podman rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
     rm -rf "$WORK_DIR"
-    echo "[*] 清理完成。"
+    echo "[*] Cleanup complete."
 }
 trap cleanup EXIT INT TERM
 
 # =============================================
-# 第一步：启动容器并安装 RPM
+# Step 1: Start container and install RPM
 # =============================================
-echo "[1/6] 启动构建容器..."
+echo "[1/6] Starting build container..."
 podman run -d --name "$CONTAINER_NAME" \
     --tmpfs /tmp \
     --tmpfs /var/cache/dnf \
     --tmpfs /var/log \
     "$BASE_IMAGE" sleep infinity >/dev/null
 
-echo "[2/6] 安装 RPM 包..."
+echo "[2/6] Installing RPM package..."
 if [ -f "$RPM_FILE" ]; then
     podman cp "$RPM_FILE" "$CONTAINER_NAME":/tmp/target.rpm
     RPM_TARGET="/tmp/target.rpm"
 else
-    # 尝试从当前目录查找
+    # Try to find from current directory
     if [ -f "./$RPM_FILE" ]; then
         podman cp "./$RPM_FILE" "$CONTAINER_NAME":/tmp/target.rpm
         RPM_TARGET="/tmp/target.rpm"
     else
-        echo "错误：找不到 RPM 文件: $RPM_FILE"
+        echo "Error: Cannot find RPM file: $RPM_FILE"
         exit 1
     fi
 fi
 
 if [ "$FORCE_MODE" -eq 1 ]; then
-    echo "  ⚠️  启用强制安装模式 (忽略依赖与签名)..."
-    # 使用 rpm 直接安装，忽略所有校验
+    echo "  ⚠️  Force install mode enabled (ignoring dependencies and signature)..."
+    # Use rpm directly, ignoring all checks
     podman exec "$CONTAINER_NAME" rpm -ivh --nodeps --nosignature --nodigest "$RPM_TARGET"
 else
-    # 默认模式：尝试使用 dnf 智能安装
-    echo "  → 使用 DNF 安装..."
+    # Default mode: Try smart install with dnf
+    echo "  → Installing with DNF..."
     if ! podman exec "$CONTAINER_NAME" dnf install -y "$RPM_TARGET" 2>&1 | grep -v "^warning:"; then
-        echo "  ⚠ DNF 安装遇到问题，尝试继续..."
-        # 如果 DNF 失败，通常后面提取文件会为空，但这里保留 || true 逻辑与原版一致，
-        # 或者你可以在这里加一个 fallback 自动切到 rpm 模式
+        echo "  ⚠ DNF installation encountered issues, attempting to continue..."
+        # If DNF fails, extraction will usually be empty, but keeping || true logic for consistency
     fi
 fi
 
-podman exec "$CONTAINER_NAME" dnf install -y "$RPM_TARGET" 2>&1 | grep -v "^warning:" || true
-
 # =============================================
-# 第二步：提取文件 (Critical Fix applied here)
+# Step 2: Extract files (Critical Fix applied here)
 # =============================================
-echo "[3/6] 提取文件层..."
+echo "[3/6] Extracting file layer..."
 
-# 修复：使用 sed 替代 awk，保留文件名中的空格
-# 格式为 "A /path/to/file with spaces" -> 去掉前两个字符
+# Fix: Use sed instead of awk to preserve spaces in filenames
+# Format "A /path/to/file with spaces" -> remove first 2 chars
 podman diff "$CONTAINER_NAME" | sed -n 's/^A //p' | \
     grep -E "^/usr|^/etc|^/opt" > "$WORK_DIR/files.txt"
 
 if [ ! -s "$WORK_DIR/files.txt" ]; then
-    echo "错误：未检测到文件变更！"
+    echo "Error: No file changes detected!"
     exit 1
 fi
 
-echo "  → 检测到 $(wc -l < "$WORK_DIR/files.txt") 个文件变更"
+echo "  → Detected $(wc -l < "$WORK_DIR/files.txt") file changes"
 
 podman cp "$WORK_DIR/files.txt" "$CONTAINER_NAME":/tmp/files.txt
 
-# 使用 --verbatim-files-from 防止文件名被解析为参数 (虽然 tar 默认处理换行符分割通常没问题，但安全起见)
-# 允许 tar 返回 1 (警告，如 socket 文件无法归档)
+# Use --verbatim-files-from to prevent filename parsing (though tar usually handles newline-delimited lists fine)
+# Allow tar to return 1 (warnings, e.g. socket files cannot be archived)
 podman exec "$CONTAINER_NAME" tar --no-recursion -czf /tmp/payload.tar.gz -T /tmp/files.txt || {
     RET=$?
     if [ $RET -eq 1 ]; then
-        echo "  ⚠ Tar 完成但有警告 (通常是安全的)"
+        echo "  ⚠ Tar completed with warnings (usually safe)"
     else
-        echo "  ❌ Tar 失败 (代码 $RET)"
+        echo "  ❌ Tar failed (code $RET)"
         exit $RET
     fi
 }
@@ -178,13 +175,13 @@ podman exec "$CONTAINER_NAME" tar --no-recursion -czf /tmp/payload.tar.gz -T /tm
 podman cp "$CONTAINER_NAME":/tmp/payload.tar.gz "$WORK_DIR/payload.tar.gz"
 
 # =============================================
-# 第三步：初始化 Flatpak
+# Step 3: Initialize Flatpak
 # =============================================
-echo "[4/6] 初始化 Flatpak..."
+echo "[4/6] Initializing Flatpak..."
 
 if ! flatpak info org.fedoraproject.Platform//$RUNTIME_VER >/dev/null 2>&1; then
-    echo "错误：未安装 Fedora Flatpak Runtime ($RUNTIME_VER)"
-    echo "请运行: flatpak install flathub org.fedoraproject.Platform//$RUNTIME_VER"
+    echo "Error: Fedora Flatpak Runtime ($RUNTIME_VER) not installed"
+    echo "Please run: flatpak install flathub org.fedoraproject.Platform//$RUNTIME_VER"
     exit 1
 fi
 
@@ -194,22 +191,22 @@ flatpak build-init "$WORK_DIR/build" "$FLATPAK_ID" \
     "$RUNTIME_VER" --arch="$ARCH"
 
 # =============================================
-# 第四步：重构文件布局
+# Step 4: Restructure file layout
 # =============================================
-echo "[5/6] 重构文件布局..."
+echo "[5/6] Restructuring file layout..."
 
 tar -xf "$WORK_DIR/payload.tar.gz" -C "$WORK_DIR/build/files"
 cd "$WORK_DIR/build/files"
 
-# Flatten /usr 和 /opt
+# Flatten /usr and /opt
 [ -d usr ] && { chmod -R u+rwX usr; cp -r usr/* .; rm -rf usr; }
 [ -d opt ] && { chmod -R u+rwX opt; cp -r opt/* .; rm -rf opt; }
 [ -d etc ] && { chmod -R u+rwX etc; rm -rf etc; }
 
-# 创建启动器
+# Create launcher
 mkdir -p bin
 
-# 计算 flatten 后的路径
+# Calculate flattened path
 if [[ "$EXEC_PATH" == /usr/* ]]; then
     FLATTENED_PATH="${EXEC_PATH#/usr/}"
 elif [[ "$EXEC_PATH" == /opt/* ]]; then
@@ -218,45 +215,45 @@ else
     FLATTENED_PATH="${EXEC_PATH#/}"
 fi
 
-echo "  → 创建启动器: bin/$EXEC_NAME -> $FLATTENED_PATH"
+echo "  → Creating launcher: bin/$EXEC_NAME -> $FLATTENED_PATH"
 
 if [ ! -e "$FLATTENED_PATH" ]; then
-    echo "  ⚠️  警告: 目标文件不存在: $FLATTENED_PATH"
-    echo "  → 尝试搜索替代路径..."
+    echo "  ⚠️  Warning: Target file does not exist: $FLATTENED_PATH"
+    echo "  → Searching for alternative path..."
     FLATTENED_PATH=$(find . -type f -name "$EXEC_NAME" -executable | head -n1)
     if [ -n "$FLATTENED_PATH" ]; then
         FLATTENED_PATH="${FLATTENED_PATH#./}"
-        echo "  ✓ 找到: $FLATTENED_PATH"
+        echo "  ✓ Found: $FLATTENED_PATH"
     fi
 fi
 
 if [ -n "$FLATTENED_PATH" ] && [ -e "$FLATTENED_PATH" ]; then
     ln -sf "../$FLATTENED_PATH" "bin/$EXEC_NAME"
 else
-    echo "  ✗ 错误: 无法定位可执行文件"
+    echo "  ✗ Error: Cannot locate executable file"
     exit 1
 fi
 
-# 处理 Desktop 文件
+# Handle Desktop file
 mkdir -p share/applications
 TARGET_DESKTOP="share/applications/${FLATPAK_ID}.desktop"
 
 if [ -n "$DESKTOP_FILE" ] && [ -e "${DESKTOP_FILE#/usr/}" ]; then
-    echo "  → 复制 Desktop 文件"
+    echo "  → Copying Desktop file"
     cp "${DESKTOP_FILE#/usr/}" "$TARGET_DESKTOP"
     
-    # 修正 Exec 和 Icon
+    # Fix Exec and Icon
     sed -i "s|^Exec=.*|Exec=$EXEC_NAME|" "$TARGET_DESKTOP"
     sed -i "s|^Icon=.*|Icon=$FLATPAK_ID|" "$TARGET_DESKTOP"
     
-    # 如果需要禁用沙箱
+    # If sandbox needs to be disabled
     if [ "$CFG_flags_no_sandbox" = "yes" ]; then
-        # 仅替换没有参数的 Exec，或者在已有参数后追加
-        # 这里简单替换：找到 Exec=... 行，在末尾加 --no-sandbox
+        # Only replace Exec without parameters, or append to existing parameters
+        # Simple replacement: find Exec=... line, append --no-sandbox at the end
         sed -i "/^Exec=/ s/$/ --no-sandbox/" "$TARGET_DESKTOP"
     fi
 else
-    echo "  → 生成默认 Desktop 文件"
+    echo "  → Generating default Desktop file"
     cat > "$TARGET_DESKTOP" <<EOF
 [Desktop Entry]
 Name=$APP_NAME
@@ -271,20 +268,20 @@ EOF
     fi
 fi
 
-# 处理图标
+# Handle icon
 mkdir -p share/icons/hicolor/256x256/apps
 
 if [ -n "$ICON_PATH" ]; then
-    # 尝试去掉 /usr/ 或 /opt/ 前缀
+    # Try to remove /usr/ or /opt/ prefix
     ICON_FLATTENED="${ICON_PATH#/usr/}"
     ICON_FLATTENED="${ICON_FLATTENED#/opt/}"
     
     if [ -f "$ICON_FLATTENED" ]; then
-        echo "  → 复制图标: $ICON_FLATTENED"
+        echo "  → Copying icon: $ICON_FLATTENED"
         cp "$ICON_FLATTENED" "share/icons/hicolor/256x256/apps/${FLATPAK_ID}.png"
     else
-        echo "  ⚠️  图标文件不存在 ($ICON_FLATTENED)，搜索替代..."
-        # 这里的 find 也需要处理文件名带空格的情况，但这里通常是单个文件
+        echo "  ⚠️  Icon file does not exist ($ICON_FLATTENED), searching for alternative..."
+        # Find also needs to handle filenames with spaces, but usually a single file
         FOUND_ICON=$(find share/icons share/pixmaps -name "*.png" -type f 2>/dev/null | head -n1)
         if [ -n "$FOUND_ICON" ]; then
             cp "$FOUND_ICON" "share/icons/hicolor/256x256/apps/${FLATPAK_ID}.png"
@@ -292,9 +289,9 @@ if [ -n "$ICON_PATH" ]; then
     fi
 fi
 
-# 如果没有图标，创建占位符
+# If no icon, create placeholder
 if [ ! -f "share/icons/hicolor/256x256/apps/${FLATPAK_ID}.png" ]; then
-    echo "  → 创建占位图标"
+    echo "  → Creating placeholder icon"
     printf '\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82' \
         > "share/icons/hicolor/256x256/apps/${FLATPAK_ID}.png"
 fi
@@ -302,11 +299,11 @@ fi
 cd - >/dev/null
 
 # =============================================
-# 第五步：完成构建
+# Step 5: Finish build
 # =============================================
-echo "[6/6] 完成构建并打包..."
+echo "[6/6] Finishing build and packaging..."
 
-# 构建 PATH 和 LD_LIBRARY_PATH
+# Build PATH and LD_LIBRARY_PATH
 FLATPAK_PATH="/app/bin:/usr/bin"
 FLATPAK_LD="/app/lib64:/app/lib"
 
@@ -343,13 +340,13 @@ flatpak build-bundle "$WORK_DIR/repo" "$PWD/$OUTPUT_BUNDLE" "$FLATPAK_ID"
 
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "✅ 构建成功！"
+echo "✅ Build successful!"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "应用名称: $APP_NAME"
+echo "Application name: $APP_NAME"
 echo "Flatpak ID: $FLATPAK_ID"
-echo "文件位置: $PWD/$OUTPUT_BUNDLE"
+echo "File location: $PWD/$OUTPUT_BUNDLE"
 echo ""
-echo "安装并运行:"
+echo "Install and run:"
 echo "  flatpak install --user $OUTPUT_BUNDLE"
 echo "  flatpak run $FLATPAK_ID"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
