@@ -4,6 +4,8 @@
 
 A smart tool to convert RPM packages into Flatpak bundles with minimal effort. For over a decade, converting RPM packages to Flatpak has been a manual, error-prone process requiring deep knowledge of both packaging formats. This tool automates the entire workflow with intelligent detection and an interactive wizard.
 
+This tool was developed with help of AI.
+
 ## Why This Tool?
 
 The RPM-to-Flatpak conversion problem has existed since Flatpak's inception:
