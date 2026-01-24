@@ -37,7 +37,7 @@ Install Fedora runtime from official Fedora repository:
 # Add Fedora Flatpak remote if not already added
 flatpak remote-add --if-not-exists fedora oci+https://registry.fedoraproject.org
 
-# Install Fedora Platform and SDK
+# Install Fedora Platform and SDK (Currently only works with rpm capable for fedora43)
 flatpak install fedora org.fedoraproject.Platform//f43
 flatpak install fedora org.fedoraproject.Sdk//f43
 ```
