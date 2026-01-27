@@ -228,7 +228,6 @@ The builder sets these Flatpak permissions by default:
 
 - Only supports x86_64 architecture
 - Requires Fedora 43 base image
-- RPM dependencies are not automatically resolved
 - Some complex applications may need manual tweaking
 
 ## Contributing
