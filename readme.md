@@ -25,19 +25,22 @@ This tool solves all these issues with **automated detection** and **intelligent
 - 📦 **Wrapper Script Detection**: Automatically unwraps shell scripts to find real binaries
 - ⚡ **Force Install Support**: Handles problematic RPMs with signature or dependency issues
 - 🎨 **Complete Flatpak**: Generates proper desktop integration with icons and metadata
+- 👻 **Headless Mode**: Option to skip desktop files and icons for headless applications
+- 🔗 **Extra Repositories**: Add custom repositories during build for missing dependencies  
+- ⚙️ **Custom Permissions**: Override default Flatpak permissions per application needs
 
 ## Requirements
 
 - **podman**: Container runtime
 - **flatpak**: Flatpak package manager
-- **Fedora Runtime**: `org.fedoraproject.Platform//f43` and `org.fedoraproject.Sdk//f43`
+- **Fedora Runtime**: Uses automatic detection (`%fedora` macro) - requires matching Fedora runtime SDKs for your system version
 
 Install Fedora runtime from official Fedora repository:
 ```bash
 # Add Fedora Flatpak remote if not already added
 flatpak remote-add --if-not-exists fedora oci+https://registry.fedoraproject.org
 
-# Install Fedora Platform and SDK (Currently only works with rpm capable for fedora43)
+# Install Fedora Platform and SDK (Currently only works with rpm capable for fedora)
 flatpak install fedora org.fedoraproject.Platform//f43
 flatpak install fedora org.fedoraproject.Sdk//f43
 ```
@@ -131,6 +134,73 @@ If automatic DNF installation fails (signature issues, missing dependencies), th
 1. Automatically set `force_install=yes` in the config
 2. The builder will use `rpm -ivh --nodeps --nosignature` instead
 3. No need to pass `--force` flag manually
+
+### Advanced Features
+
+#### Headless Mode (No Desktop Icon)
+
+For command-line tools or headless applications, skip desktop file and icon generation:
+
+1. During the probe wizard, select `[n] none` when choosing an icon:
+   ```
+   Actions: [number] select, [a] use recommended, [n] none (no icon), [e] explore, [m] manual
+   Your choice > n
+   ```
+
+2. The builder will detect `icon_path=none` and skip desktop/icon creation entirely
+
+**Use Case**: CLI tools like databases, build systems, or background services that don't need desktop integration.
+
+#### Custom Repositories Support
+
+Add extra repositories during RPM installation for missing dependencies:
+
+1. In the probe wizard "Runtime Flags" step:
+   ```
+   Extra Repos URL (e.g. https://.../foo.repo) - used during build:
+   > https://example.com/repo/x86_64/
+   ```
+
+2. The builder will install `dnf-command(config-manager)` and add the repository before installing your RPM
+
+**Use Case**: Applications requiring repos from third-party sources or enterprise repositories.
+
+#### Custom Flatpak Permissions
+
+Override default sandbox permissions for applications with special requirements:
+
+1. In the probe wizard "Runtime Flags" step:
+   ```
+   Extra Flatpak Permissions (e.g. --device=all --filesystem=/tmp):
+   > --device=dri --filesystem=/var/log/app
+   ```
+
+2. The builder will append these flags to `flatpak build-finish` command
+
+**Use Case**: Applications needing access to specific devices, filesystem locations, or additional system resources.
+
+**Example Configuration with All Features:**
+```ini
+[meta]
+app_name=headless-cli
+rpm_file=mytool-1.0-1.x86_64.rpm
+force_install=yes
+extra_repos=https://enterprise.repo.com/stable/
+
+[desktop]
+desktop_file=
+
+[exec] 
+exec_path=/usr/bin/mytool
+exec_name=mytool
+
+[icon]
+icon_path=none
+
+[flags]
+no_sandbox=no
+extra_permissions=--device=dri --filesystem=/opt/data
+```
 
 ## How It Works
 
