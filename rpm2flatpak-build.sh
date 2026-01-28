@@ -2,12 +2,12 @@
 set -e
 
 # =============================================
-# RPM to Flatpak - Builder (Fixed Version)
+# RPM to Flatpak - Builder (Fixed Version + Extra Features)
 # Purpose: Build Flatpak package from config file
 # =============================================
 
-FEDORA_VER="43"
-RUNTIME_VER="f43"
+FEDORA_VER=$(rpm -E %fedora)
+RUNTIME_VER="f${FEDORA_VER}"
 BASE_IMAGE="registry.fedoraproject.org/fedora:${FEDORA_VER}"
 ARCH=$(uname -m)
 
@@ -128,6 +128,14 @@ else
     fi
 fi
 
+# [FEATURE] Add extra repositories if configured
+if [ -n "$CFG_meta_extra_repos" ]; then
+    echo "  → Adding extra repositories: $CFG_meta_extra_repos"
+    # Ensure config-manager is available and add repo
+    podman exec "$CONTAINER_NAME" sh -c "dnf install -y 'dnf-command(config-manager)' && dnf config-manager addrepo --set=baseurl='$CFG_meta_extra_repos'" || \
+    echo "  ⚠️  Warning: Failed to add extra repo, attempting to proceed..."
+fi
+
 if [ "$FORCE_MODE" -eq 1 ]; then
     echo "  ⚠️  Force install mode enabled (ignoring dependencies and signature)..."
     # Use rpm directly, ignoring all checks
@@ -137,17 +145,15 @@ else
     echo "  → Installing with DNF..."
     if ! podman exec "$CONTAINER_NAME" dnf install -y "$RPM_TARGET" 2>&1 | grep -v "^warning:"; then
         echo "  ⚠ DNF installation encountered issues, attempting to continue..."
-        # If DNF fails, extraction will usually be empty, but keeping || true logic for consistency
     fi
 fi
 
 # =============================================
-# Step 2: Extract files (Critical Fix applied here)
+# Step 2: Extract files
 # =============================================
 echo "[3/6] Extracting file layer..."
 
 # Fix: Use sed instead of awk to preserve spaces in filenames
-# Format "A /path/to/file with spaces" -> remove first 2 chars
 podman diff "$CONTAINER_NAME" | sed -n 's/^A //p' | \
     grep -E "^/usr|^/etc|^/opt" > "$WORK_DIR/files.txt"
 
@@ -160,8 +166,6 @@ echo "  → Detected $(wc -l < "$WORK_DIR/files.txt") file changes"
 
 podman cp "$WORK_DIR/files.txt" "$CONTAINER_NAME":/tmp/files.txt
 
-# Use --verbatim-files-from to prevent filename parsing (though tar usually handles newline-delimited lists fine)
-# Allow tar to return 1 (warnings, e.g. socket files cannot be archived)
 podman exec "$CONTAINER_NAME" tar --no-recursion -czf /tmp/payload.tar.gz -T /tmp/files.txt || {
     RET=$?
     if [ $RET -eq 1 ]; then
@@ -234,27 +238,33 @@ else
     exit 1
 fi
 
-# Handle Desktop file
-mkdir -p share/applications
-TARGET_DESKTOP="share/applications/${FLATPAK_ID}.desktop"
+# =========================================================
+# MODIFIED SECTION START: Handle Desktop & Icon conditionally
+# =========================================================
 
-if [ -n "$DESKTOP_FILE" ] && [ -e "${DESKTOP_FILE#/usr/}" ]; then
-    echo "  → Copying Desktop file"
-    cp "${DESKTOP_FILE#/usr/}" "$TARGET_DESKTOP"
-    
-    # Fix Exec and Icon
-    sed -i "s|^Exec=.*|Exec=$EXEC_NAME|" "$TARGET_DESKTOP"
-    sed -i "s|^Icon=.*|Icon=$FLATPAK_ID|" "$TARGET_DESKTOP"
-    
-    # If sandbox needs to be disabled
-    if [ "$CFG_flags_no_sandbox" = "yes" ]; then
-        # Only replace Exec without parameters, or append to existing parameters
-        # Simple replacement: find Exec=... line, append --no-sandbox at the end
-        sed -i "/^Exec=/ s/$/ --no-sandbox/" "$TARGET_DESKTOP"
-    fi
+# Check if headless mode is requested
+if [ "$ICON_PATH" = "none" ]; then
+    echo "  → 'none' icon detected: Skipping Desktop file and Icon generation (Headless Mode)"
 else
-    echo "  → Generating default Desktop file"
-    cat > "$TARGET_DESKTOP" <<EOF
+    # --- 原有的 Desktop 处理逻辑 ---
+    mkdir -p share/applications
+    TARGET_DESKTOP="share/applications/${FLATPAK_ID}.desktop"
+
+    if [ -n "$DESKTOP_FILE" ] && [ -e "${DESKTOP_FILE#/usr/}" ]; then
+        echo "  → Copying Desktop file"
+        cp "${DESKTOP_FILE#/usr/}" "$TARGET_DESKTOP"
+        
+        # Fix Exec and Icon
+        sed -i "s|^Exec=.*|Exec=$EXEC_NAME|" "$TARGET_DESKTOP"
+        sed -i "s|^Icon=.*|Icon=$FLATPAK_ID|" "$TARGET_DESKTOP"
+        
+        # If sandbox needs to be disabled
+        if [ "$CFG_flags_no_sandbox" = "yes" ]; then
+            sed -i "/^Exec=/ s/$/ --no-sandbox/" "$TARGET_DESKTOP"
+        fi
+    else
+        echo "  → Generating default Desktop file"
+        cat > "$TARGET_DESKTOP" <<EOF
 [Desktop Entry]
 Name=$APP_NAME
 Exec=$EXEC_NAME
@@ -263,38 +273,41 @@ Icon=$FLATPAK_ID
 Categories=Utility;
 Terminal=false
 EOF
-    if [ "$CFG_flags_no_sandbox" = "yes" ]; then
-        sed -i "/^Exec=/ s/$/ --no-sandbox/" "$TARGET_DESKTOP"
-    fi
-fi
-
-# Handle icon
-mkdir -p share/icons/hicolor/256x256/apps
-
-if [ -n "$ICON_PATH" ]; then
-    # Try to remove /usr/ or /opt/ prefix
-    ICON_FLATTENED="${ICON_PATH#/usr/}"
-    ICON_FLATTENED="${ICON_FLATTENED#/opt/}"
-    
-    if [ -f "$ICON_FLATTENED" ]; then
-        echo "  → Copying icon: $ICON_FLATTENED"
-        cp "$ICON_FLATTENED" "share/icons/hicolor/256x256/apps/${FLATPAK_ID}.png"
-    else
-        echo "  ⚠️  Icon file does not exist ($ICON_FLATTENED), searching for alternative..."
-        # Find also needs to handle filenames with spaces, but usually a single file
-        FOUND_ICON=$(find share/icons share/pixmaps -name "*.png" -type f 2>/dev/null | head -n1)
-        if [ -n "$FOUND_ICON" ]; then
-            cp "$FOUND_ICON" "share/icons/hicolor/256x256/apps/${FLATPAK_ID}.png"
+        if [ "$CFG_flags_no_sandbox" = "yes" ]; then
+            sed -i "/^Exec=/ s/$/ --no-sandbox/" "$TARGET_DESKTOP"
         fi
     fi
-fi
 
-# If no icon, create placeholder
-if [ ! -f "share/icons/hicolor/256x256/apps/${FLATPAK_ID}.png" ]; then
-    echo "  → Creating placeholder icon"
-    printf '\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82' \
-        > "share/icons/hicolor/256x256/apps/${FLATPAK_ID}.png"
+    # --- 原有的 Icon 处理逻辑 ---
+    mkdir -p share/icons/hicolor/256x256/apps
+
+    if [ -n "$ICON_PATH" ]; then
+        # Try to remove /usr/ or /opt/ prefix
+        ICON_FLATTENED="${ICON_PATH#/usr/}"
+        ICON_FLATTENED="${ICON_FLATTENED#/opt/}"
+        
+        if [ -f "$ICON_FLATTENED" ]; then
+            echo "  → Copying icon: $ICON_FLATTENED"
+            cp "$ICON_FLATTENED" "share/icons/hicolor/256x256/apps/${FLATPAK_ID}.png"
+        else
+            echo "  ⚠️  Icon file defined but not found ($ICON_FLATTENED), searching fallback..."
+            FOUND_ICON=$(find share/icons share/pixmaps -name "*.png" -type f 2>/dev/null | head -n1)
+            if [ -n "$FOUND_ICON" ]; then
+                cp "$FOUND_ICON" "share/icons/hicolor/256x256/apps/${FLATPAK_ID}.png"
+            fi
+        fi
+    fi
+
+    # If no icon, create placeholder
+    if [ ! -f "share/icons/hicolor/256x256/apps/${FLATPAK_ID}.png" ]; then
+        echo "  → Creating placeholder icon"
+        printf '\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82' \
+            > "share/icons/hicolor/256x256/apps/${FLATPAK_ID}.png"
+    fi
 fi
+# =========================================================
+# MODIFIED SECTION END
+# =========================================================
 
 cd - >/dev/null
 
@@ -315,6 +328,13 @@ if [ -n "$CFG_flags_extra_ld_path" ]; then
     FLATPAK_LD="$FLATPAK_LD:$CFG_flags_extra_ld_path"
 fi
 
+# [FEATURE] Handle extra permissions override
+EXTRA_PERMS_ARGS=""
+if [ -n "$CFG_flags_extra_permissions" ]; then
+    EXTRA_PERMS_ARGS="$CFG_flags_extra_permissions"
+    echo "  → Applying custom permissions: $EXTRA_PERMS_ARGS"
+fi
+
 flatpak build-finish "$WORK_DIR/build" \
     --command="$EXEC_NAME" \
     --share=network \
@@ -332,7 +352,8 @@ flatpak build-finish "$WORK_DIR/build" \
     --env=PATH="$FLATPAK_PATH" \
     --env=LD_LIBRARY_PATH="$FLATPAK_LD" \
     --env=ELECTRON_TRASH=gio \
-    --env=GTK_USE_PORTAL=1
+    --env=GTK_USE_PORTAL=1 \
+    $EXTRA_PERMS_ARGS
 
 mkdir -p "$WORK_DIR/repo"
 flatpak build-export "$WORK_DIR/repo" "$WORK_DIR/build" >/dev/null

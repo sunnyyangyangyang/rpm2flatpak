@@ -2,10 +2,10 @@
 set -e
 
 # =============================================
-# RPM to Flatpak - Smart Detector (V2.2: Signal Capture Fix)
+# RPM to Flatpak - Smart Detector (V2.3: Features Added)
 # =============================================
 
-FEDORA_VER="43"
+FEDORA_VER=$(rpm -E %fedora)
 BASE_IMAGE="registry.fedoraproject.org/fedora:${FEDORA_VER}"
 
 # Color definitions
@@ -40,23 +40,19 @@ SELECTED_ICON=""
 NO_SANDBOX="no"
 EXTRA_PATH=""
 EXTRA_LD=""
+EXTRA_REPOS=""
+EXTRA_PERMS=""
 FORCE_INSTALL="no"
 
 cleanup() {
-    # Prevent duplicate execution
     trap - EXIT
-    
-    # Remove temporary files
     if [ -f "/tmp/rpm_probe_files_$$.txt" ]; then
         rm -f "/tmp/rpm_probe_files_$$.txt"
     fi
-
-    # Auto-remove container
     echo ""
     echo -e "${BLUE}[*] Cleaning up probe container...${NC}"
     podman rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
 }
-# Only trap EXIT
 trap cleanup EXIT
 
 scan_files() {
@@ -77,13 +73,9 @@ enter_explorer() {
     echo ""
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo "🔧 Enter Container Shell"
-    echo "Tips: "
-    echo "  1. RPM file located at: /root/$RPM_FILENAME"
-    echo "  2. Type 'exit' to return to the wizard when done."
+    echo "Tips: RPM file located at /root/$RPM_FILENAME"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    
     podman exec -it "$CONTAINER_NAME" bash || true
-    
     echo ""
     echo "Interactive mode ended, continuing..."
     scan_files
@@ -104,11 +96,8 @@ init_container() {
     echo "  → Attempting automatic installation..."
     if ! podman exec "$CONTAINER_NAME" dnf install -y "/root/$RPM_FILENAME" >/dev/null 2>&1; then
         echo ""
-        echo -e "${RED}❌ Automatic installation failed!${NC} (RPM signature issue or missing dependencies)"
-        echo -e "Don't worry, please follow these steps to handle manually:"
-        echo -e "1. Enter ${CYAN}y${NC} to access container"
-        echo -e "2. Run: ${CYAN}rpm -ivh --nodeps --nosignature --nodigest /root/$RPM_FILENAME${NC}"
-        echo -e "3. Run: ${CYAN}exit${NC}"
+        echo -e "${RED}❌ Automatic installation failed!${NC}"
+        echo -e "Dependencies might be missing. You can configure Extra Repos later or solve manually."
         echo ""
         read -p "Enter container for manual handling? [Y/n] " fix_choice
         if [[ "$fix_choice" =~ ^[Nn]$ ]]; then
@@ -122,18 +111,12 @@ init_container() {
     fi
 }
 
-# =============================================
-# Step Functions
-# =============================================
-
 step_desktop() {
     while true; do
         echo ""
         echo "┌─────────────────────────────────────────────────────────┐"
         echo "│ [1/4] Select Desktop File                                │"
         echo "└─────────────────────────────────────────────────────────┘"
-        echo "Tip: If there are multiple components (e.g. WPS), select the main program entry."
-        echo ""
         
         if [ "$DESKTOP_COUNT" -eq 0 ]; then
             echo -e "  ${YELLOW}⚠ No standard .desktop file found${NC}"
@@ -142,23 +125,16 @@ step_desktop() {
         fi
         
         echo ""
-        echo -e "  Actions: [number] select, [s] skip/none, ${CYAN}[e] manual explore${NC}, [m] manual input path"
+        echo -e "  Actions: [number] select, [s] skip/none, ${CYAN}[e] manual explore${NC}, [m] manual input"
         read -p "  Your choice > " choice
-
-        # Handle Ctrl+D or empty input
-        if [ $? -ne 0 ]; then exit 1; fi
 
         case "$choice" in
             e|E) enter_explorer ;;
             s|S) SELECTED_DESKTOP=""; return ;;
             m|M) 
                 read -p "  Enter full path: " manual_path
-                if podman exec "$CONTAINER_NAME" test -f "$manual_path"; then
-                    SELECTED_DESKTOP="$manual_path"
-                    return
-                else
-                    echo -e "  ${RED}File does not exist${NC}"
-                fi
+                SELECTED_DESKTOP="$manual_path"
+                return
                 ;;
             *)
                 if [[ "$choice" =~ ^[0-9]+$ ]]; then
@@ -168,7 +144,7 @@ step_desktop() {
                         return
                     fi
                 fi
-                echo "  Invalid choice, please retry."
+                echo "  Invalid choice."
                 ;;
         esac
     done
@@ -221,7 +197,7 @@ step_exec() {
         fi
 
         if [ -n "$SUGGESTED" ]; then
-            echo -e "  ${BLUE}★ Recommended (from Desktop): $SUGGESTED${NC}"
+            echo -e "  ${BLUE}★ Recommended: $SUGGESTED${NC}"
         fi
 
         echo "  Detected binary files:"
@@ -234,36 +210,23 @@ step_exec() {
         case "$choice" in
             e|E) enter_explorer ;;
             a|A)
-                if [ -n "$SUGGESTED" ]; then
-                    SELECTED_EXEC="$SUGGESTED"
-                    break
-                else
-                    echo "  No recommendation available."
-                fi
+                if [ -n "$SUGGESTED" ]; then SELECTED_EXEC="$SUGGESTED"; break; fi
                 ;;
             m|M)
                 read -p "  Enter executable full path: " manual_exec
-                if podman exec "$CONTAINER_NAME" test -f "$manual_exec"; then
-                    SELECTED_EXEC="$manual_exec"
-                    break
-                else
-                    echo -e "  ${RED}File does not exist${NC}"
-                fi
+                SELECTED_EXEC="$manual_exec"
+                break
                 ;;
             *)
                 if [[ "$choice" =~ ^[0-9]+$ ]]; then
                     SELECTED_EXEC=$(echo "$EXEC_LIST" | sed -n "${choice}p")
-                    if [ -n "$SELECTED_EXEC" ]; then
-                        break
-                    fi
+                    if [ -n "$SELECTED_EXEC" ]; then break; fi
                 fi
-                echo "  Invalid choice."
                 ;;
         esac
     done
-    
     EXEC_NAME=$(basename "$SELECTED_EXEC")
-    echo -e "  ${GREEN}✓ Selected: $SELECTED_EXEC (name: $EXEC_NAME)${NC}"
+    echo -e "  ${GREEN}✓ Selected: $SELECTED_EXEC${NC}"
 }
 
 step_icon() {
@@ -276,32 +239,28 @@ step_icon() {
         SUGGESTED_ICON=""
         if [ -n "$SELECTED_DESKTOP" ]; then
              ICON_NAME=$(podman exec "$CONTAINER_NAME" grep '^Icon=' "$SELECTED_DESKTOP" | head -n1 | cut -d= -f2)
-             if [[ "$ICON_NAME" == /* ]]; then
-                 SUGGESTED_ICON="$ICON_NAME"
-             elif [ -n "$ICON_NAME" ]; then
+             if [ -n "$ICON_NAME" ]; then
                  SUGGESTED_ICON=$(echo "$ICON_LIST" | grep "$ICON_NAME" | head -n1)
              fi
         fi
 
         if [ -n "$SUGGESTED_ICON" ]; then
-             echo -e "  ${BLUE}★ Recommended (from Desktop): $SUGGESTED_ICON${NC}"
+             echo -e "  ${BLUE}★ Recommended: $SUGGESTED_ICON${NC}"
         fi
 
         echo "  Detected icons (Top 10):"
         echo "$ICON_LIST" | head -10 | nl -w4 -s'. ' | sed 's/^/  /'
 
         echo ""
-        echo -e "  Actions: [number] select, [a] use recommended, [s] skip, ${CYAN}[e] manual explore${NC}, [m] manual input"
+        # [FEATURE] Added [n] none option
+        echo -e "  Actions: [number] select, [a] use recommended, [n] none (no icon), ${CYAN}[e] explore${NC}, [m] manual"
         read -p "  Your choice > " choice
 
         case "$choice" in
+            n|N) SELECTED_ICON="none"; return ;;
             e|E) enter_explorer ;;
-            s|S) SELECTED_ICON=""; return ;;
             a|A) 
-                if [ -n "$SUGGESTED_ICON" ]; then
-                    SELECTED_ICON="$SUGGESTED_ICON"
-                    return
-                fi
+                if [ -n "$SUGGESTED_ICON" ]; then SELECTED_ICON="$SUGGESTED_ICON"; return; fi
                 ;;
             m|M)
                 read -p "  Enter icon path: " manual_icon
@@ -316,7 +275,6 @@ step_icon() {
                         return
                     fi
                 fi
-                echo "  Invalid choice."
                 ;;
         esac
     done
@@ -329,33 +287,19 @@ step_flags() {
         echo "│ [4/4] Runtime Parameters                                 │"
         echo "└─────────────────────────────────────────────────────────┘"
         
-        IS_ELECTRON=0
-        if echo "$SELECTED_EXEC" | grep -qE 'electron|code|atom|vscode'; then IS_ELECTRON=1; fi
-        if podman exec "$CONTAINER_NAME" find /opt -name "chrome-sandbox" 2>/dev/null | grep -q .; then IS_ELECTRON=1; fi
-        
-        DEFAULT_SANDBOX="n"
-        if [ "$IS_ELECTRON" -eq 1 ]; then
-            echo -e "  ${YELLOW}⚠ Detected possible Electron application${NC}"
-            DEFAULT_SANDBOX="y"
-        fi
-
-        read -p "  Disable internal sandbox (--no-sandbox)? [y/N/e] (default: $DEFAULT_SANDBOX): " sb_input
-        
-        if [ "$sb_input" = "e" ] || [ "$sb_input" = "E" ]; then
-            enter_explorer
-            continue
-        fi
-
-        if [ -z "$sb_input" ]; then sb_input="$DEFAULT_SANDBOX"; fi
+        read -p "  Disable internal sandbox (--no-sandbox)? [y/N]: " sb_input
         if [ "$sb_input" = "y" ] || [ "$sb_input" = "Y" ]; then NO_SANDBOX="yes"; else NO_SANDBOX="no"; fi
 
-        read -p "  Extra PATH directories (optional/e): " path_input
-        if [ "$path_input" = "e" ]; then enter_explorer; continue; fi
-        EXTRA_PATH="$path_input"
+        read -p "  Extra PATH directories (optional): " EXTRA_PATH
+        read -p "  Extra LD_LIBRARY_PATH (optional): " EXTRA_LD
 
-        read -p "  Extra LD_LIBRARY_PATH (optional/e): " ld_input
-        if [ "$ld_input" = "e" ]; then enter_explorer; continue; fi
-        EXTRA_LD="$ld_input"
+        # [FEATURE] Extra Repos
+        echo -e "  Extra Repos URL (e.g. https://.../foo.repo) - used during build:"
+        read -p "  > " EXTRA_REPOS
+        
+        # [FEATURE] Extra Permissions
+        echo -e "  Extra Flatpak Permissions (e.g. --device=all --filesystem=/tmp):"
+        read -p "  > " EXTRA_PERMS
         
         break
     done
@@ -364,17 +308,12 @@ step_flags() {
 # =============================================
 # Main Logic
 # =============================================
-
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "  RPM Detector - Interactive Mode (V2.2)"
+echo "  RPM Detector - Interactive Mode (V2.3)"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "Target RPM: $APP_NAME"
-echo ""
 
 init_container
 scan_files
-
-# Execute steps in sequence
 step_desktop
 step_exec
 step_icon
@@ -384,11 +323,6 @@ step_flags
 # Generate Configuration
 # =============================================
 
-echo ""
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo -e "${GREEN}Configuration generated successfully${NC}"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-
 cat > "$CONF_FILE" <<EOF
 # RPM to Flatpak Configuration File
 # Generated: $(date)
@@ -397,6 +331,7 @@ cat > "$CONF_FILE" <<EOF
 app_name=$APP_NAME
 rpm_file=$(basename "$RPM_FILE")
 force_install=$FORCE_INSTALL
+extra_repos=$EXTRA_REPOS
 
 [desktop]
 desktop_file=$SELECTED_DESKTOP
@@ -412,13 +347,11 @@ icon_path=$SELECTED_ICON
 no_sandbox=$NO_SANDBOX
 extra_path=$EXTRA_PATH
 extra_ld_path=$EXTRA_LD
+extra_permissions=$EXTRA_PERMS
 EOF
 
-echo "Configuration file saved to: $CONF_FILE"
-echo "Content:"
-echo "----------------------------------------"
-cat "$CONF_FILE"
-echo "----------------------------------------"
 echo ""
-echo -e "${YELLOW}Next step:${NC}"
-echo "Run build script: ./rpm2flatpak-build.sh $CONF_FILE"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo -e "${GREEN}Configuration generated successfully${NC}"
+echo "File: $CONF_FILE"
+echo -e "${YELLOW}Next step: ./rpm2flatpak-build.sh $CONF_FILE${NC}"
