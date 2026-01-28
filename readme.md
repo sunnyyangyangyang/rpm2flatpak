@@ -1,10 +1,10 @@
 ![Demo of successfuly converted packages](./demo.png)
 
-sunny@fedora:~$ flatpak list | grep rpm
-code    org.rpm.code            master  code-origin     user
-wechatlinux     org.rpm.wechatlinux             master  wechatlinux-origin      user
-wps-office      org.rpm.wps-office              master  wps-office-origin       user
-xmcl    org.rpm.xmcl            master  xmcl-origin     user
+sunny@fedora:~$ flatpak list | grep rpm\n
+code    org.rpm.code            master  code-origin     user\n
+wechatlinux     org.rpm.wechatlinux             master  wechatlinux-origin      user\n
+wps-office      org.rpm.wps-office              master  wps-office-origin       user\n
+xmcl    org.rpm.xmcl            master  xmcl-origin     user\n
 
 # RPM to Flatpak Converter
 
