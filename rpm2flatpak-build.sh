@@ -232,7 +232,11 @@ if [ ! -e "$FLATTENED_PATH" ]; then
 fi
 
 if [ -n "$FLATTENED_PATH" ] && [ -e "$FLATTENED_PATH" ]; then
-    ln -sf "../$FLATTENED_PATH" "bin/$EXEC_NAME"
+    if [ "$FLATTENED_PATH" = "bin/$EXEC_NAME" ]; then
+        echo "  ℹ Symlink already correct, skipping"
+    else
+        ln -sf "../$FLATTENED_PATH" "bin/$EXEC_NAME"
+    fi
 else
     echo "  ✗ Error: Cannot locate executable file"
     exit 1

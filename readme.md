@@ -51,8 +51,8 @@ Install Fedora runtime from official Fedora repository:
 flatpak remote-add --if-not-exists fedora oci+https://registry.fedoraproject.org
 
 # Install Fedora Platform and SDK (Currently only works with rpm capable for fedora)
-flatpak install fedora org.fedoraproject.Platform//f43
-flatpak install fedora org.fedoraproject.Sdk//f43
+flatpak install fedora org.fedoraproject.Platform//f$(rpm -E %fedora)
+flatpak install fedora org.fedoraproject.Sdk//f$(rpm -E %fedora)
 ```
 
 ## Quick Start
@@ -307,7 +307,7 @@ The builder sets these Flatpak permissions by default:
 ## Limitations
 
 - Only supports x86_64 architecture
-- Requires Fedora 43 base image
+- Requires Fedora base image
 - Some complex applications may need manual tweaking
 
 ## Contributing

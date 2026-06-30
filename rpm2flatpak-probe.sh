@@ -167,6 +167,7 @@ step_exec() {
                 SUGGESTED="$CMD_IN_DESKTOP"
             else
                 # Try to find in /usr/bin or /usr/sbin
+                podman exec "$CONTAINER_NAME" dnf install -y which > /dev/null 2>&1
                 SUGGESTED=$(podman exec "$CONTAINER_NAME" which "$CMD_IN_DESKTOP" 2>/dev/null || echo "")
                 
                 # If found, check if it's a wrapper script and extract real path
@@ -240,7 +241,8 @@ step_icon() {
         if [ -n "$SELECTED_DESKTOP" ]; then
              ICON_NAME=$(podman exec "$CONTAINER_NAME" grep '^Icon=' "$SELECTED_DESKTOP" | head -n1 | cut -d= -f2)
              if [ -n "$ICON_NAME" ]; then
-                 SUGGESTED_ICON=$(echo "$ICON_LIST" | grep "$ICON_NAME" | head -n1)
+                ICON_LIST=$(podman exec "$CONTAINER_NAME" find /usr/share/icons /usr/share/pixmaps /opt -name ${ICON_NAME}*)
+                SUGGESTED_ICON=$(echo "$ICON_LIST" | grep "$ICON_NAME" | head -n1)
              fi
         fi
 
